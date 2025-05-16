@@ -1,0 +1,16 @@
+
+makeBytes :: Int -> Int -> [Word8]
+makeBytes numBytes x = do
+  let bytes  = shifty x
+  let padLen = numBytes - length bytes
+  if padLen < 1 then
+    drop (padLen * (-1)) bytes
+  else
+    replicate padLen 0x0 <> bytes
+  where
+    shifty :: Int -> [Word8]
+    shifty x'
+      | x' < 256 = [ fromIntegral x' ]
+      -- carry the overflow back to LSB
+      | otherwise = shifty (x' .>>. 8) <> [fromIntegral x']
+
