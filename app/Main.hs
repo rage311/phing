@@ -1,7 +1,11 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
+-- {-# LANGUAGE RecordWildCards #-}
+
+-- TODO:
+--  interrupt handler to print final stats
+--  random id seed
 
 module Main where
 
@@ -9,6 +13,7 @@ import Control.Concurrent
 import Control.Monad
 import Data.Binary
 import Data.Bits
+import Data.Functor
 import Data.IORef
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
@@ -19,6 +24,7 @@ import Network.Socket.ByteString (recvFrom, sendAll)
 import Text.Printf
 
 import ICMP
+import System.Environment (getArgs)
 
 
 defaultTimeoutus :: Timeout
@@ -63,16 +69,19 @@ data PingSent = PingSent
 data PingStats = PingStats
   { countSent       :: Int
   , countRecv       :: Int
-  -- , countTotalTxRx  :: Int
   , countTimeout    :: Int
   , countSuccess    :: Int
   , pctSuccess      :: Double
-  , avgRoundTrip    :: Double
   , minRoundTrip    :: Double
+  , avgRoundTrip    :: Double
   , maxRoundTrip    :: Double
   , stdDevRoundTrip :: Double
+  , roundTripTimes  :: [Double]
   }
   deriving (Eq, Show)
+
+-- instance Show PingStats where
+  -- _ = _
 
 initialStats :: PingStats
 initialStats = PingStats
@@ -81,83 +90,65 @@ initialStats = PingStats
   , countTimeout    = 0
   , countSuccess    = 0
   , pctSuccess      = 0.0
-  , avgRoundTrip    = 0.0
   , minRoundTrip    = fromIntegral defaultTimeoutMs
+  , avgRoundTrip    = 0.0
   , maxRoundTrip    = 0.0
   , stdDevRoundTrip = 0.0
+  , roundTripTimes  = []
   }
 
--- attempt at "incrementing" stats
--- -- TODO: IN PROGRESS:
--- -- does countSent get accounted for?
--- calcStat :: PingStats -> PingRef -> PingStats
--- calcStat
---   acc@(PingStats
---     { countSent       = countSent'
---     , countRecv       = countRecv'
---     , countTimeout    = countTimeout'
---     , countSuccess    = countSuccess'
---     , pctSuccess      = pctSuccess'
---     , avgRoundTrip    = avgRoundTrip'
---     , minRoundTrip    = minRoundTrip'
---     , maxRoundTrip    = maxRoundTrip'
---     , stdDevRoundTrip = stdDevRoundTrip'
---     })
---   ping@(PingRef { .. }) =
---   case result of
---     Received ->
---       let
---         lastStats = acc
---         pingDiff         = pingDiffMs ping
---         totalRoundTripMs = avgRoundTrip' * (fromIntegral countSuccess' - 1)
---       in
---         acc
---           { countRecv    = countRecv lastStats + 1
---           , countSuccess = countSuccess lastStats + 1
---           , pctSuccess   = fromIntegral countSuccess' / fromIntegral countTotal * 100.00
---           , avgRoundTrip = (totalRoundTripMs + pingDiff) / fromIntegral countSuccess'
---           , minRoundTrip = min minRoundTrip' pingDiff
---           , maxRoundTrip = max maxRoundTrip' pingDiff
---           -- TODO: stdDevRoundTrip
---           }
---     TimedOut -> acc
---       { countTimeout = countTimeout' + 1
---       , pctSuccess     = fromIntegral countSuccess' / fromIntegral countTotal * 100.00
---       }
---   where
---     countTotal = countRecv' + countSent' + countTimeout'
---     increment x y = x + y
+calcStat :: PingStats -> PingRef -> PingStats
+calcStat accStat ping =
+  case result ping of
+    Received ->
+      let
+        countSuccess' = countSuccess accStat + 1
+        countRecv'    = countRecv accStat + 1
+        countSent'    = countSent accStat + 1
+        pctSuccess'   = 100.0 * fromIntegral countRecv' / fromIntegral countSent'
 
--- TODO: calc only for last n packets?
-calcStats :: [PingRef] -> [PingSent] -> PingStats
-calcStats [] [] = initialStats
-calcStats [] _ = initialStats
+        tripTime      = pingDiffMs ping
+        minRoundTrip' = min (minRoundTrip accStat) tripTime
+        maxRoundTrip' = max (maxRoundTrip accStat) tripTime
+        countSuccessDbl = fromIntegral countSuccess'
+        avgRoundTrip' = (
+            avgRoundTrip accStat * (countSuccessDbl - 1)
+            + tripTime
+          ) / countSuccessDbl
+
+        roundTripTimes' = tripTime : roundTripTimes accStat
+        sumOfSquares = sum $ map (\x ->
+            (avgRoundTrip' - x) * (avgRoundTrip' - x)
+          ) roundTripTimes'
+        stdDevRoundTrip' = sqrt $ sumOfSquares / countSuccessDbl
+      in
+        accStat
+          { countSuccess    = countSuccess'
+          , countRecv       = countRecv'
+          , countSent       = countSent'
+          , pctSuccess      = pctSuccess'
+          , minRoundTrip    = minRoundTrip'
+          , maxRoundTrip    = maxRoundTrip'
+          , avgRoundTrip    = avgRoundTrip'
+          , stdDevRoundTrip = stdDevRoundTrip'
+          , roundTripTimes  = roundTripTimes'
+          }
+    TimedOut ->
+      let
+        countTimeout' = countTimeout accStat + 1
+        countSent'    = countSent accStat + 1
+      in accStat
+        { countTimeout = countTimeout'
+        , countSent = countSent'
+        }
+
+calcStats :: IORef [PingRef] -> IORef [PingSent] -> IO [PingStats]
+-- calcStatsIORef (IORef []) sent   = [initialStats { countSent = length sent }]
 calcStats refs sent = do
-  -- refs' <- readIORef refs
-  -- sent' <- readIORef sent
-  let countSent = length refs + length sent
-
-  -- let stats' = stats { countSent = length refs + length sent }
-  -- foldl calcStat stats' refs
-
-  let successRefs  = filter (\x -> result x == Received) refs
-  let countRecv    = length successRefs
-  let pctSuccess   = 100.0 * (fromIntegral countRecv / fromIntegral countSent)
-  let pingDiffs    = map pingDiffMs successRefs
-  let avgRoundTrip = sum pingDiffs / fromIntegral (length successRefs)
-  let minRoundTrip = minimum pingDiffs
-  let maxRoundTrip = maximum pingDiffs
-
-  initialStats
-    { countSent
-    , countRecv
-    , pctSuccess
-    , avgRoundTrip
-    , minRoundTrip
-    , maxRoundTrip
-    -- TODO:
-    -- , stdDevRoundTrip = undefined
-    }
+  refs' <- readIORef refs
+  sent' <- readIORef sent
+  return $ scanl calcStat
+    (calcStat (initialStats { countSent = length sent' }) (head refs')) (tail refs')
 
 -- combines id and seqNum to form a unique refId
 mkRefId :: Word16 -> Word16 -> Word32
@@ -194,12 +185,18 @@ pingListen sock chan = forever $ do
   writeChan chan $ MsgPingReceived (refId', recvTime, sockAddr)
   putStrLn ""
 
+removeFromSent :: RefId -> IORef [PingSent] -> IO [PingSent]
+removeFromSent refId' sent = do
+  (matches, noMatch) <- readIORef sent >>= \sent' ->
+     return $ partition (\(PingSent refId _ _) -> refId == refId') sent'
+  writeIORef sent noMatch
+  return matches
+
 pingMaster :: Chan Message -> IO ()
 pingMaster chan = do
-  -- let stats = initialStats
   -- TODO: wrapper around each? or just refs?
   -- e.g. addNewRef refs newPingRef -- return the new value?
-  stats <- newIORef initialStats :: IO (IORef PingStats)
+  stats <- newIORef [initialStats] :: IO (IORef [PingStats])
   refs  <- newIORef [] :: IO (IORef [PingRef])
   sent  <- newIORef [] :: IO (IORef [PingSent])
 
@@ -215,41 +212,49 @@ pingMaster chan = do
           getCurrentTime >>= \now ->
             modifyIORef refs $ \refs' ->
               PingRef refId' sentTime now TimedOut : refs'
+          _matches <- removeFromSent refId' sent
+          newStats <- calcStats refs sent
+          print $ last newStats
+
         modifyIORef sent $ \sent' ->
           sent' <> [PingSent refId' sentTime timeoutThreadId]
         return ()
 
       (MsgPingReceived (refId', recvTime', sockAddr)) -> do
         -- putStrLn $ "Recv: refId " <> show refId' <> " @ " <> show recvTime'
+        -- NOTE: this will match pings sent from other ping utilities
         putStrLn $ "Received reply for refId "
           <> show refId'
           <> " from: " <> show sockAddr
 
-        (matches@(match:_ms), noMatch) <- readIORef sent >>= \sent' ->
-          return $ partition (\(PingSent refId _ _) -> refId == refId') sent'
-        if null matches then do
-           putStrLn $ "No match for seqNum: " <> show refId'
-        else do
-          let (PingSent sentId sentTime timeoutThreadId) = match
-          killThread timeoutThreadId
-          writeIORef sent noMatch
+        matches <- removeFromSent refId' sent
+        case matches of
+          []        -> putStrLn $ "DEBUG: No match for seqNum: " <> show refId'
+          (match:_) -> do
+            let (PingSent sentId sentTime timeoutThreadId) = match
+            killThread timeoutThreadId
 
-          let pingRef = PingRef sentId sentTime recvTime' Received
-          putStrLn $ printf "%.1f ms\n" $ pingDiffMs pingRef
+            let pingRef = PingRef sentId sentTime recvTime' Received
+            putStrLn $ printf "%.1f ms\n" $ pingDiffMs pingRef
 
-          -- update refs
-          refs' <- readIORef refs
-          let newRefs = pingRef : refs'
-          writeIORef refs newRefs
+            -- update refs
+            refs' <- readIORef refs
+            let newRefs = pingRef : refs'
+            mapM_ (print . pingDiffMs) newRefs
+            writeIORef refs newRefs
 
-          -- update stats
-          sent' <- readIORef sent
-          let newStats = calcStats newRefs sent'
-          print newStats
-          writeIORef stats newStats
+            -- update stats
+            newStats <- calcStats refs sent
+
+            putStrLn "All:"
+            print $ last newStats
+            putStrLn "Last 10:"
+            print $ last $ take 10 newStats
+            writeIORef stats newStats
 
 main :: IO ()
 main = do
+  target <- head <$> getArgs
   let intervalSec = 1000 * 5000
   let ident       = 666
   addr <-
@@ -259,7 +264,7 @@ main = do
           , addrSocketType = Raw
           , addrProtocol   = 1
       })
-      (Just "8.8.8.8")
+      (Just target)
       Nothing
   print addr
 
