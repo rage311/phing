@@ -1,7 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
--- {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE RecordWildCards #-}
 
 -- TODO:
 --  interrupt handler to print final stats
@@ -13,7 +13,6 @@ import Control.Concurrent
 import Control.Monad
 import Data.Binary
 import Data.Bits
-import Data.Functor
 import Data.IORef
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
@@ -53,19 +52,14 @@ data PingRef = PingRef
   , sentTime   :: UTCTime
   , resultTime :: UTCTime
   , result     :: PingResult
-  }
-  deriving (Eq, Show)
+  } deriving (Eq, Show)
 
 data PingSent = PingSent
   { sentRefId       :: RefId
   , time            :: SentTime
   , timeoutThreadId :: ThreadId
-  }
-  deriving (Eq, Show)
+  } deriving (Eq, Show)
 
--- TODO:
--- write custom show impl to pretty print
---   + truncate decimal precision on Doubles
 data PingStats = PingStats
   { countSent       :: Int
   , countRecv       :: Int
@@ -77,11 +71,7 @@ data PingStats = PingStats
   , maxRoundTrip    :: Double
   , stdDevRoundTrip :: Double
   , roundTripTimes  :: [Double]
-  }
-  deriving (Eq, Show)
-
--- instance Show PingStats where
-  -- _ = _
+  } deriving (Eq, Show)
 
 initialStats :: PingStats
 initialStats = PingStats
@@ -96,6 +86,18 @@ initialStats = PingStats
   , stdDevRoundTrip = 0.0
   , roundTripTimes  = []
   }
+
+showStats :: PingStats -> String
+showStats PingStats { .. } =
+  --- 8.8.8.8 ping statistics ---
+  -- 3 packets transmitted, 3 received, 0% packet loss, time 2002ms
+  -- rtt min/avg/max/mdev = 13.288/13.320/13.354/0.027 ms
+  show countSent <> " packets transmitted"
+    <> ", " <> show countRecv <> " received"
+    <> ", " <> show ((countSent - countSuccess) `div` countSent * 100) <> "% packet loss"
+    <> "\n"
+    <> "rtt min/avg/max/mdev = "
+      <> printf "%.3f/%.3f/%.3f/%.3f ms" minRoundTrip avgRoundTrip maxRoundTrip stdDevRoundTrip
 
 calcStat :: PingStats -> PingRef -> PingStats
 calcStat accStat ping =
@@ -214,7 +216,8 @@ pingMaster chan = do
               PingRef refId' sentTime now TimedOut : refs'
           _matches <- removeFromSent refId' sent
           newStats <- calcStats refs sent
-          print $ last newStats
+          -- print $ last newStats
+          putStrLn $ showStats (last newStats)
 
         modifyIORef sent $ \sent' ->
           sent' <> [PingSent refId' sentTime timeoutThreadId]
@@ -240,17 +243,19 @@ pingMaster chan = do
             -- update refs
             refs' <- readIORef refs
             let newRefs = pingRef : refs'
-            mapM_ (print . pingDiffMs) newRefs
+            -- mapM_ (print . pingDiffMs) newRefs
             writeIORef refs newRefs
 
             -- update stats
             newStats <- calcStats refs sent
+            writeIORef stats newStats
 
             putStrLn "All:"
-            print $ last newStats
+            putStrLn $ showStats (last newStats)
+            putStrLn ""
             putStrLn "Last 10:"
-            print $ last $ take 10 newStats
-            writeIORef stats newStats
+            putStrLn $ showStats $ last $ take 10 newStats
+            putStrLn ""
 
 main :: IO ()
 main = do
@@ -278,7 +283,7 @@ main = do
   let pings =
         map (\seqNum -> do
           let payload = "your mom goes to college" :: BS.ByteString
-          putStrLn $ "Sending " <> show (BS.length payload) <> " bytes to " <> show addr
+          putStrLn $ "Sending " <> show (BS.length payload) <> " bytes to " <> target
           sendPing sock chan ident seqNum payload
           threadDelay intervalSec
         ) [0..]
