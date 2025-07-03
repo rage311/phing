@@ -200,6 +200,15 @@ removeFromSent refId' sent = do
   writeIORef sent noMatch
   return matches
 
+printStats :: [PingStats] -> IO ()
+printStats stats = do
+  putStrLn "All:"
+  putStrLn $ showStats (last stats)
+  putStrLn ""
+  putStrLn "Last 10:"
+  putStrLn $ showStats $ last $ take 10 stats
+  putStrLn ""
+
 pingMaster :: Chan Message -> IO ()
 pingMaster chan = do
   -- TODO: wrapper around each? or just refs?
@@ -254,13 +263,7 @@ pingMaster chan = do
             -- update stats
             newStats <- calcStats refs sent
             writeIORef stats newStats
-
-            putStrLn "All:"
-            putStrLn $ showStats (last newStats)
-            putStrLn ""
-            putStrLn "Last 10:"
-            putStrLn $ showStats $ last $ take 10 newStats
-            putStrLn ""
+            printStats newStats
 
 intervalSec :: Int
 intervalSec = 1000 * 5000
@@ -278,7 +281,6 @@ main = do
   -- _ <- installHandler sigINT ...
 
   myIdent <- randomID
-  print $ "myIdent: " <> show myIdent
 
   target <- head <$> getArgs
 
