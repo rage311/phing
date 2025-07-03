@@ -5,7 +5,6 @@
 
 -- TODO:
 --  interrupt handler to print final stats
---  random id seed
 
 module Main where
 
@@ -20,10 +19,14 @@ import Data.List
 import Data.Time
 import Network.Socket
 import Network.Socket.ByteString (recvFrom, sendAll)
+
 import Text.Printf
+import System.Random
+import System.Environment (getArgs)
+import System.Exit
+import System.Posix
 
 import ICMP
-import System.Environment (getArgs)
 
 
 defaultTimeoutus :: Timeout
@@ -97,7 +100,11 @@ showStats PingStats { .. } =
     <> ", " <> show ((countSent - countSuccess) `div` countSent * 100) <> "% packet loss"
     <> "\n"
     <> "rtt min/avg/max/mdev = "
-      <> printf "%.3f/%.3f/%.3f/%.3f ms" minRoundTrip avgRoundTrip maxRoundTrip stdDevRoundTrip
+    <> printf "%.3f/%.3f/%.3f/%.3f ms"
+         minRoundTrip
+         avgRoundTrip
+         maxRoundTrip
+         stdDevRoundTrip
 
 calcStat :: PingStats -> PingRef -> PingStats
 calcStat accStat ping =
@@ -145,7 +152,6 @@ calcStat accStat ping =
         }
 
 calcStats :: IORef [PingRef] -> IORef [PingSent] -> IO [PingStats]
--- calcStatsIORef (IORef []) sent   = [initialStats { countSent = length sent }]
 calcStats refs sent = do
   refs' <- readIORef refs
   sent' <- readIORef sent
@@ -216,7 +222,6 @@ pingMaster chan = do
               PingRef refId' sentTime now TimedOut : refs'
           _matches <- removeFromSent refId' sent
           newStats <- calcStats refs sent
-          -- print $ last newStats
           putStrLn $ showStats (last newStats)
 
         modifyIORef sent $ \sent' ->
@@ -257,13 +262,28 @@ pingMaster chan = do
             putStrLn $ showStats $ last $ take 10 newStats
             putStrLn ""
 
+intervalSec :: Int
+intervalSec = 1000 * 5000
+
+randomID :: IO Word16
+randomID = do
+  gen <- newStdGen
+  return $ 65535 * (head $ randoms gen :: Word16)
+
 main :: IO ()
 main = do
+  sigHandler <- newEmptyMVar
+
+  -- TODO: sigint to show final stats and exit
+  -- _ <- installHandler sigINT ...
+
+  myIdent <- randomID
+  print $ "myIdent: " <> show myIdent
+
   target <- head <$> getArgs
-  let intervalSec = 1000 * 5000
-  let ident       = 666
-  addr <-
-    head <$> getAddrInfo
+
+  addr <- head <$>
+    getAddrInfo
       (Just defaultHints
           { addrFlags      = [AI_ADDRCONFIG]
           , addrSocketType = Raw
@@ -284,7 +304,7 @@ main = do
         map (\seqNum -> do
           let payload = "your mom goes to college" :: BS.ByteString
           putStrLn $ "Sending " <> show (BS.length payload) <> " bytes to " <> target
-          sendPing sock chan ident seqNum payload
+          sendPing sock chan myIdent seqNum payload
           threadDelay intervalSec
         ) [0..]
 
@@ -294,4 +314,9 @@ main = do
     (\_ -> putMVar threadsDone myThreadId)
   _masterThreadId <- forkIO $ pingMaster chan
 
-  forever $ sequence_ pings
+  -- when sigint handler is installed properly
+  _pingThreadId <- forkIO $ sequence_ pings
+  putStrLn "pinging..."
+
+  -- TODO:
+  takeMVar sigHandler

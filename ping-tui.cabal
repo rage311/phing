@@ -73,7 +73,9 @@ executable ping-tui
         text,
         utf8-string,
         binary,
-        time
+        time,
+        random,
+        unix
 
     -- Directories containing source files.
     hs-source-dirs:   app
