@@ -1,0 +1,6 @@
+
+installHandler sigINT CatchOnce (\ -> 
+        newStats <- calcStats refs sent
+        -- print $ last newStats
+        putStrLn $ showStats (last newStats)
+
