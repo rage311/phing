@@ -1,4 +1,4 @@
-# Revision history for ping-tui
+# Revision history for phing
 
 ## 0.1.0.0 -- YYYY-mm-dd
 

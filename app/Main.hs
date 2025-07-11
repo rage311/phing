@@ -29,11 +29,19 @@ import System.Posix
 import ICMP
 
 
-defaultTimeoutus :: Timeout
-defaultTimeoutus = 4000 * 1000
-
 defaultTimeoutMs :: Timeout
-defaultTimeoutMs = 4000
+defaultTimeoutMs = 3500
+
+defaultTimeoutus :: Timeout
+defaultTimeoutus = defaultTimeoutMs * 1000
+
+intervalSec :: Int
+intervalSec = 1000 * 4000
+
+randomID :: IO Word16
+randomID = do
+  gen <- newStdGen
+  return $ 65535 * (head $ randoms gen :: Word16)
 
 data Message
   = MsgPingSent (Word32, UTCTime)
@@ -97,7 +105,7 @@ showStats PingStats { .. } =
   -- rtt min/avg/max/mdev = 13.288/13.320/13.354/0.027 ms
   show countSent <> " packets transmitted"
     <> ", " <> show countRecv <> " received"
-    <> ", " <> show ((countSent - countSuccess) `div` countSent * 100) <> "% packet loss"
+    <> ", " <> show ((countSentFloat - countSuccessFloat) / countSentFloat * 100.0) <> "% packet loss"
     <> "\n"
     <> "rtt min/avg/max/mdev = "
     <> printf "%.3f/%.3f/%.3f/%.3f ms"
@@ -105,6 +113,9 @@ showStats PingStats { .. } =
          avgRoundTrip
          maxRoundTrip
          stdDevRoundTrip
+  where
+    countSentFloat    = fromIntegral countSent
+    countSuccessFloat = fromIntegral countSuccess
 
 calcStat :: PingStats -> PingRef -> PingStats
 calcStat accStat ping =
@@ -202,12 +213,13 @@ removeFromSent refId' sent = do
 
 printStats :: [PingStats] -> IO ()
 printStats stats = do
-  putStrLn "All:"
+  putStrLn "All stats:"
   putStrLn $ showStats (last stats)
   putStrLn ""
-  putStrLn "Last 10:"
-  putStrLn $ showStats $ last $ take 10 stats
-  putStrLn ""
+  unless (length stats < 10) $ do
+    putStrLn "Last 10 stats:"
+    putStrLn $ showStats $ last $ take 10 stats
+    putStrLn ""
 
 pingMaster :: Chan Message -> IO ()
 pingMaster chan = do
@@ -265,20 +277,14 @@ pingMaster chan = do
             writeIORef stats newStats
             printStats newStats
 
-intervalSec :: Int
-intervalSec = 1000 * 5000
-
-randomID :: IO Word16
-randomID = do
-  gen <- newStdGen
-  return $ 65535 * (head $ randoms gen :: Word16)
-
 main :: IO ()
 main = do
-  sigHandler <- newEmptyMVar
 
   -- TODO: sigint to show final stats and exit
+  -- sigHandler <- newEmptyMVar
   -- _ <- installHandler sigINT ...
+  -- TODO: at end of main
+  -- takeMVar sigHandler
 
   myIdent <- randomID
 
@@ -320,5 +326,5 @@ main = do
   _pingThreadId <- forkIO $ sequence_ pings
   putStrLn "pinging..."
 
-  -- TODO:
-  takeMVar sigHandler
+  _ <- takeMVar threadsDone
+  return ()
